@@ -9,7 +9,7 @@
 
 
 ## Installation
-```
+```bash
 pip install tbforge
 
 git clone https://github.com/yourusername/tbforge.git
@@ -18,7 +18,7 @@ pip install -e .
 ```
 
 ## Quick start
-```
+```python
 #1. Create pre-defined lattice
 lat = Lattice.honeycomb() #define bulk lattice
 
@@ -43,7 +43,7 @@ Plotter().plot_bands(bands, kpath_1d, ticks)
 <img src="images/honeycomb_band.png" alt="Honeycomb bands" width="400"/>
 
 We can also plot DOS
-```
+```python
 kgrid = lat.find_kgrid(mesh=[300,300,1])
 dos = Solver(h).get_dos(kgrid, erange=np.linspace(-6,6,300))
 Plotter().plot_dos(dos, ylim=[0,1])
@@ -51,7 +51,7 @@ Plotter().plot_dos(dos, ylim=[0,1])
 <img src="images/honeycomb_dos.png" alt="Honeycomb DOS" width="400"/>
 
 Typical 2D lattices are pre-defined in `tbforge`
-```
+```python
 f, axs = plt.subplots(2, 5, figsize=(25,8))
 
 for i, lat in enumerate([Lattice.square(),
