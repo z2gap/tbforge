@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tbforge"
+version = "0.1.0"
+description = "Tight-binding package for quantum materials"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "GPL-3.0-only" }
+
+authors = [
+  { name = "Sajid Sekh", email = "sajid.burd@gmail.com" }
+]
+
+dependencies = [
+  "numpy",
+  "scipy",
+  "numba",
+  "matplotlib"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest",
+  "black",
+  "ruff",
+  "ipython"
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
