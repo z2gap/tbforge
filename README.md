@@ -10,9 +10,7 @@
 
 ## Installation
 ```bash
-pip install tbforge
-
-git clone https://github.com/yourusername/tbforge.git
+git clone https://github.com/z2gap/tbforge.git
 cd tbforge
 pip install -e .
 ```
