@@ -2,12 +2,25 @@ import numpy as np
 import scipy as sp
 import numba as nb
 from typing import List, Tuple
+from .finite import *
 
 class Lattice:
-    def __init__(self, latVecs: List[List[float]], basisVecs: List[List[float]]) -> None:
+    def __init__(self, latVecs, basisVecs, bc=[1,1,1]) -> None:
         self.latVecs = np.array(latVecs)     #lattice vecs 
         self.basisVecs = np.array(basisVecs) #sublattice vecs
+        self.bc = np.array(bc)
         self.dim = len(latVecs)              #lattice dimension (1D/2D/3D)
+        self.n_sites = len(basisVecs)
+
+
+    def is_bulk(self): 
+        return True
+    
+
+    def bz_area(self):
+        b1, b2, _ = self.bzVecs()
+        return b1[0]*b2[1] - b1[1]*b2[0] 
+
 
     def bzVecs(self) -> np.ndarray:
         a1, a2, a3 = self.latVecs
@@ -16,29 +29,61 @@ class Lattice:
         b2 = 2 * np.pi * np.cross(a3, a1) / V
         b3 = 2 * np.pi * np.cross(a1, a2) / V
         return np.array([b1, b2, b3])
+    
+
+    def make_finite(self, shape, center=True):
+        Lx, Ly, Lz = shape
+        if center:
+            mid = np.array([Lx//2, Ly//2, Lz//2])
+        else:
+            mid = np.zeros(3, dtype=int)
+        positions = []
+        cell_indices = []
+        basis_indices = []
+
+        for i in range(Lx):
+            for j in range(Ly):
+                for k in range(Lz):
+                    R = (
+                        (i - mid[0]) * self.latVecs[0] +
+                        (j - mid[1]) * self.latVecs[1] +
+                        (k - mid[2]) * self.latVecs[2]
+                    )
+
+                    for ib, tau in enumerate(self.basisVecs):
+                        positions.append(R + tau)
+                        cell_indices.append([i, j, k])
+                        basis_indices.append(np.array(self.latVecs)* np.array(shape))
+
+        return Finite(
+            np.array(positions),
+            np.array(basis_indices),
+        )
             
 
-    def find_neighbor_dist(self, hop_order=1, nx=5, ny=5, nz=1):
+    def find_neighbor_dist(self, hop_order=1, nx=3, ny=3, nz=1):
         bulk_coords = []
-        for ix in range(-nx, nx+1):
-            for iy in range(-ny, ny+1):
-                for iz in range(-nz, nz+1):
-                    shift = ix*np.array(self.latVecs[0]) + iy*np.array(self.latVecs[1]) + iz*np.array(self.latVecs[2])
+        for ix in range(nx):
+            for iy in range(ny):
+                for iz in range(nz):
+                    shift = (ix*np.array(self.latVecs[0]) +
+                            iy*np.array(self.latVecs[1]) +
+                            iz*np.array(self.latVecs[2]))
                     for tau in self.basisVecs:
                         bulk_coords.append(shift + np.array(tau))
+
         bulk_coords = np.array(bulk_coords)
+        coords_xy = bulk_coords[:, :2]
 
-        # KDTree for distances
-        tree = sp.spatial.KDTree(bulk_coords)
-        distances, _ = tree.query(bulk_coords, k=hop_order+1)  # +1 to include self
-
-        # Skip self (distance=0), flatten, remove duplicates
-        all_distances = np.unique(distances[:,1:].round(decimals=8))
-
+        tree = sp.spatial.KDTree(coords_xy)
+        distances, _ = tree.query(coords_xy, k=10)
+        all_distances = np.unique(distances[:, 1:].round(8))
         if hop_order > len(all_distances):
-            raise ValueError(f"hop_order={hop_order} exceeds available neighbors ({len(all_distances)})")
+            raise ValueError(
+                f"hop_order={hop_order} exceeds available neighbors ({len(all_distances)})"
+            )
+        return all_distances[hop_order - 1]
 
-        return all_distances[hop_order-1]
 
     @classmethod
     def chain(cls, a=1.0):
@@ -78,12 +123,22 @@ class Lattice:
 
     @classmethod
     def honeycomb(cls, a=1.0, c=1.0):
-        """Honeycomb lattice"""
-        a1 = [a, 0, 0]
-        a2 = [a/2, a*np.sqrt(3)/2, 0]
-        a3 = [0, 0, c]
-        tauA = [0, 0, 0]
-        tauB = [0, a/np.sqrt(3), 0]
+        """Honeycomb lattice with fractional basis"""
+        import numpy as np
+
+        # Lattice vectors
+        a1 = np.array([a, 0, 0])
+        a2 = np.array([a/2, a*np.sqrt(3)/2, 0])
+        a3 = np.array([0, 0, c])
+
+        # Basis in fractional coordinates
+        fA = np.array([1/3, 1/3, 0])
+        fB = np.array([2/3, 2/3, 0])
+
+        # Convert to Cartesian
+        tauA = fA[0]*a1 + fA[1]*a2 + fA[2]*a3
+        tauB = fB[0]*a1 + fB[1]*a2 + fB[2]*a3
+
         return cls([a1, a2, a3], [tauA, tauB])
     
     @classmethod
@@ -123,6 +178,7 @@ class Lattice:
         tau6 = [a1[0]/4 + 3*a2[0]/4, 3*a2[1]/4, 0]
         return cls([a1, a2, a3], [tau1, tau2, tau3, tau4, tau5, tau6])
     
+    
     @classmethod
     def bilayer_kagome(cls, a=1.0, c=1.0, h=[0.,0.]):
         a1 = [a, 0, 0]
@@ -143,6 +199,7 @@ class Lattice:
         basis = [tauA1, tauB1, tauC1, tauA2, tauB2, tauC2]
         return cls([a1, a2, a3], basis)
     
+
     def find_kgrid(self, pbc=[1,1,1], mesh=[5,5,1]) -> np.ndarray:
         b_vectors = self.bzVecs()  # returns [b1, b2, b3] for 3D
         kgrid = []

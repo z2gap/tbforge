@@ -10,7 +10,26 @@ class Plotter:
         if self.ax is None:
             self.ax = plt.gca()
 
-    def plot_lattice(self, lat, s=20, add_bond=False) -> None:
+    def plot_finite(self, finite, s=20, add_bond=False, add_tag=False) -> None:
+        rlist = finite.positions
+        self.ax.scatter(rlist[:,0], rlist[:,1], c=rlist[:,2], cmap='jet', marker='o', s=s)
+
+        if add_tag:
+            [plt.text(rlist[i,0], rlist[i,1], i) for i in range(len(rlist))]
+            
+        if add_bond:
+            tree = sp.spatial.KDTree(rlist)
+            nn_dist = finite.find_neighbor_dist(hop_order=1)
+            hops = tree.query_ball_point(rlist, r=nn_dist+1e-3)
+            for i, jlist in enumerate(hops):
+                for j in jlist:
+                    ri = rlist[i]
+                    rj = rlist[j]
+                    self.ax.plot([ri[0], rj[0]], [ri[1], rj[1]], color='gray', zorder=0)
+        self.ax.set_aspect('equal')
+
+
+    def plot_lattice(self, lat, s=20, add_bond=False, add_tag=False) -> None:
         rlist = lat.basisVecs
         if lat.dim == 1:
             self.ax.scatter(rlist, np.zeros(rlist), c='blue', marker='o', s=s)
@@ -18,11 +37,14 @@ class Plotter:
             self.ax.scatter(rlist[:,0], rlist[:,1], c='blue', marker='o', s=s)
         if lat.dim == 3:
             self.ax.scatter(rlist[:,0], rlist[:,1], c='blue', marker='o', s=s)
+
+        if add_tag:
+            [plt.text(rlist[i,0], rlist[i,1], i) for i in range(len(rlist))]
         
         #Not working; needs fix
         if add_bond:
             tree = sp.spatial.KDTree(rlist)
-            nn_dist = lat.findNNdist()
+            nn_dist = lat.find_neighbor_dist(hop_order=1)
             hops = tree.query_ball_point(rlist, r=nn_dist+1e-3)
             for i, jlist in enumerate(hops):
                 for j in jlist:
@@ -30,20 +52,30 @@ class Plotter:
                     rj = rlist[j]
                     self.ax.plot([ri[0], rj[0]], [ri[1], rj[1]], color='gray', zorder=0)
 
+    # def plot_lattice(self, lat, s=20, add_bond=False) -> None:
+    #     rlist = lat.basisVecs
+    #     if lat.dim == 1:
+    #         self.ax.scatter(rlist, np.zeros(rlist), c='blue', marker='o', s=s)
+    #     if lat.dim == 2:
+    #         self.ax.scatter(rlist[:,0], rlist[:,1], c='blue', marker='o', s=s)
+    #     if lat.dim == 3:
+    #         self.ax.scatter(rlist[:,0], rlist[:,1], c='blue', marker='o', s=s)
+                
 
-    def plot_bands(self, bands, kpath_1d, ticks=None, color='blue', linewidth=1.5):
+
+    def plot_bands(self, klist, bands, ticks=None, color='blue', linewidth=1.5):
         nk, nstate = bands.shape
         for ib in range(nstate):
-            self.ax.plot(kpath_1d, bands[:, ib], color=color, linewidth=linewidth)
+            self.ax.plot(klist, bands[:, ib], color=color, linewidth=linewidth)
 
         if ticks is not None:
             tick_locs, tick_labels = ticks
             self.ax.set_xticks(tick_locs)
             self.ax.set_xticklabels(tick_labels)
-            # for pos in tick_locs:
-            #     self.ax.axvline(pos, color='k', linestyle='--', linewidth=0.8)
+            for pos in tick_locs:
+                self.ax.axvline(pos, color='k', linestyle='--', linewidth=0.8)
 
-        self.ax.set_xlim(kpath_1d[0], kpath_1d[-1])
+        self.ax.set_xlim(klist[0], klist[-1])
         self.ax.set_ylabel('Energy')
         self.ax.grid(True)
 
@@ -162,5 +194,30 @@ class Plotter:
         self.ax.set_xlabel('Eneregy')
         self.ax.plot(dos[:,0], dos[:,1], c='blue')
         self.ax.grid(zorder=0)
+
+    def plot_berry_curvature(self, omega):
+        ax = plt.gca()
+        fig = ax.figure
+        sc = ax.scatter(
+            omega[:, 0],
+            omega[:, 1],
+            c=omega[:, 2],
+            s=20,
+            cmap='RdBu'
+        )
+        ax.set_aspect('equal')
+        ax.axis('off')
+        cbar = fig.colorbar(
+            sc,
+            ax=ax,
+            orientation='horizontal',
+            fraction=0.03,
+            pad=0.08,
+            location='top'
+        )
+        vmin, vmax = np.min(omega[:, 2]), np.max(omega[:, 2])
+        cbar.set_ticks([vmin, vmax])
+        # cbar.ax.xaxis.set_ticks_position('top')
+        # cbar.ax.xaxis.set_label_position('top')
 
     
