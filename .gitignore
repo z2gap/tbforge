@@ -2,6 +2,7 @@
 *.swo
 
 examples/
+test/
 
 .vscode/
 

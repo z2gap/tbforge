@@ -19,7 +19,7 @@ class Hamiltonian:
         self.hops_nn = self.hopping.get_hops_nn()
         self.terms = []
         if self.sys.is_bulk() is True:
-            self.rlist = self.sys.basisVecs
+            self.rlist = self.sys.basis_vecs
         else:
             self.rlist = self.sys.positions
         self.nsite = len(self.rlist)

@@ -10,14 +10,14 @@ class Hopping:
 
     def find_hops(self, order=1, rz=0., d=1, tol=1e-3):
         if self.sys.is_bulk():
-            rlist = self.sys.basisVecs
+            rlist = self.sys.basis_vecs
         else:
-            rlist = self.sys.positions 
+            rlist = self.sys.positions
 
         range_x = range(-d, d+1) if self.sys.bc[0] else [0]
         range_y = range(-d, d+1) if self.sys.bc[1] else [0]
         range_z = range(-d, d+1) if self.sys.bc[2] else [0]
-        
+
         hopsxy = []
         hopsz = []
         rxy = self.sys.find_neighbor_dist(order)
@@ -27,9 +27,9 @@ class Hopping:
                     for s in range(len(rlist)):
                         for sp in range(len(rlist)):
                             ri = rlist[s]
-                            rj = rlist[sp] + i*self.sys.latVecs[0]\
-                                            + j*self.sys.latVecs[1]\
-                                            + k*self.sys.latVecs[2]
+                            rj = rlist[sp] + i*self.sys.lat_vecs[0]\
+                                           + j*self.sys.lat_vecs[1]\
+                                           + k*self.sys.lat_vecs[2]
                             rij = ri-rj
                             dxy = np.linalg.norm(ri[0:2]-rj[0:2])
                             dz = np.linalg.norm(rij)
@@ -53,9 +53,9 @@ class Hopping:
     
     def get_kmsign(self, full_map=False):
         if self.sys.is_bulk():
-            self.rlist = self.sys.basisVecs
+            self.rlist = self.sys.basis_vecs
         else:
-            self.rlist = self.sys.positions 
+            self.rlist = self.sys.positions
         self.hops_nn = self.get_hops_nn()
         self.hops_nnn = self.get_hops_2nn()
 

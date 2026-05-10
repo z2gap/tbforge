@@ -1,7 +1,6 @@
 import numpy as np
-import scipy as sp
-import numba as nb
-import matplotlib.pyplot as plt 
+import matplotlib.pyplot as plt
+from scipy.spatial import KDTree
 
 
 class Plotter:
@@ -16,9 +15,9 @@ class Plotter:
 
         if add_tag:
             [plt.text(rlist[i,0], rlist[i,1], i) for i in range(len(rlist))]
-            
+
         if add_bond:
-            tree = sp.spatial.KDTree(rlist)
+            tree = KDTree(rlist)
             nn_dist = finite.find_neighbor_dist(hop_order=1)
             hops = tree.query_ball_point(rlist, r=nn_dist+1e-3)
             for i, jlist in enumerate(hops):
@@ -30,30 +29,57 @@ class Plotter:
 
 
     def plot_lattice(self, lat, s=20, add_bond=False, add_tag=False) -> None:
-        rlist = lat.basisVecs
-        if lat.dim == 1:
-            self.ax.scatter(rlist, np.zeros(rlist), c='blue', marker='o', s=s)
-        if lat.dim == 2:
-            self.ax.scatter(rlist[:,0], rlist[:,1], c='blue', marker='o', s=s)
-        if lat.dim == 3:
-            self.ax.scatter(rlist[:,0], rlist[:,1], c='blue', marker='o', s=s)
+        rlist = lat.basis_vecs
+        # z coordinates of all atoms
+        z = rlist[:, 2]
+        # reference z
+        zmin = np.min(z)
+        # integer layer index for EACH atom
+        zint_list = np.rint(z - zmin).astype(int)
+        # number of layers
+        nlayer = np.max(zint_list) + 1
+        # discrete colormap
+        cmap = plt.cm.get_cmap('Set3', nlayer)
+        #offset atoms slighly if they are overlapping
+        theta = 2*np.pi*zint_list/nlayer
+        # offset = 0.008
+        offset = 0.00
+
+        x = rlist[:,0] + offset*np.cos(theta)
+        y = rlist[:,1] + offset*np.sin(theta)
+
+        # xmin, xmax = np.min(x), np.max(x)
+        # ymin, ymax = np.min(y), np.max(y)
+
+        # A = (xmax - xmin) * (ymax - ymin)
+        # N = len(x)
+        # s = 100 * np.sqrt(A/N)
+        self.ax.scatter(
+            x,
+            y,
+            c=zint_list, 
+            cmap=cmap,
+            marker='o',
+            ec='k',
+            s=s
+        )
 
         if add_tag:
             [plt.text(rlist[i,0], rlist[i,1], i) for i in range(len(rlist))]
-        
-        #Not working; needs fix
+
         if add_bond:
-            tree = sp.spatial.KDTree(rlist)
+            tree = KDTree(rlist[:, :2])
             nn_dist = lat.find_neighbor_dist(hop_order=1)
-            hops = tree.query_ball_point(rlist, r=nn_dist+1e-3)
+            hops = tree.query_ball_point(rlist[:, :2], r=nn_dist+1e-3)
             for i, jlist in enumerate(hops):
                 for j in jlist:
                     ri = rlist[i]
                     rj = rlist[j]
                     self.ax.plot([ri[0], rj[0]], [ri[1], rj[1]], color='gray', zorder=0)
+        self.ax.set_aspect('equal')
 
     # def plot_lattice(self, lat, s=20, add_bond=False) -> None:
-    #     rlist = lat.basisVecs
+    #     rlist = lat.basis_vecs
     #     if lat.dim == 1:
     #         self.ax.scatter(rlist, np.zeros(rlist), c='blue', marker='o', s=s)
     #     if lat.dim == 2:

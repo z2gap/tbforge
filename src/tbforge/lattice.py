@@ -1,277 +1,425 @@
 import numpy as np
-import scipy as sp
-import numba as nb
-from typing import List, Tuple
-from .finite import *
+from functools import cached_property
+from scipy.spatial import KDTree
+from .finite import Finite
+
 
 class Lattice:
-    def __init__(self, latVecs, basisVecs, bc=[1,1,1]) -> None:
-        self.latVecs = np.array(latVecs)     #lattice vecs 
-        self.basisVecs = np.array(basisVecs) #sublattice vecs
-        self.bc = np.array(bc)
-        self.dim = len(latVecs)              #lattice dimension (1D/2D/3D)
-        self.n_sites = len(basisVecs)
+    def __init__(self, lat_vecs, basis_vecs, bc=None) -> None:
+        self.lat_vecs = np.array(lat_vecs, dtype=float)
+        self.basis_vecs = np.array(basis_vecs, dtype=float)
+        self.bc = np.array(bc if bc is not None else [1, 1, 1])
+        self.dim = len(lat_vecs)
+        self.n_sites = len(basis_vecs)
 
-
-    def is_bulk(self): 
+    def is_bulk(self):
         return True
-    
 
     def bz_area(self):
-        b1, b2, _ = self.bzVecs()
-        return b1[0]*b2[1] - b1[1]*b2[0] 
+        b1, b2 = self.bz_vecs[:2]
+        return float(np.linalg.norm(np.cross(b1, b2)))
 
-
-    def bzVecs(self) -> np.ndarray:
-        a1, a2, a3 = self.latVecs
-        V = np.dot(a1, np.cross(a2, a3))  # unit cell V
+    @cached_property
+    def bz_vecs(self) -> np.ndarray:
+        a1, a2, a3 = self.lat_vecs
+        V = np.dot(a1, np.cross(a2, a3))
         b1 = 2 * np.pi * np.cross(a2, a3) / V
         b2 = 2 * np.pi * np.cross(a3, a1) / V
         b3 = 2 * np.pi * np.cross(a1, a2) / V
         return np.array([b1, b2, b3])
-    
 
-    def make_finite(self, shape, center=True):
-        Lx, Ly, Lz = shape
-        if center:
-            mid = np.array([Lx//2, Ly//2, Lz//2])
-        else:
-            mid = np.zeros(3, dtype=int)
-        positions = []
-        cell_indices = []
-        basis_indices = []
+    def make_finite(self, shape):
+        return Finite(self, shape)
 
-        for i in range(Lx):
-            for j in range(Ly):
-                for k in range(Lz):
-                    R = (
-                        (i - mid[0]) * self.latVecs[0] +
-                        (j - mid[1]) * self.latVecs[1] +
-                        (k - mid[2]) * self.latVecs[2]
-                    )
+    def transform(self, matrix) -> 'Lattice':
+        """Construct a supercell via a transformation matrix.
 
-                    for ib, tau in enumerate(self.basisVecs):
-                        positions.append(R + tau)
-                        cell_indices.append([i, j, k])
-                        basis_indices.append(np.array(self.latVecs)* np.array(shape))
+        matrix: [nx, ny, nz]  — diagonal supercell (integer or float)
+                (3,3) array M — new lattice vectors = M @ lat_vecs
+                               M entries may be non-integer (fractional/moiré).
+        """
+        M = np.array(matrix, dtype=float)
+        if M.ndim == 1:
+            if M.shape != (3,):
+                raise ValueError("1-D matrix must be [nx, ny, nz]")
+            M = np.diag(M)
+        elif M.shape != (3, 3):
+            raise ValueError("matrix must be shape (3,) or (3,3)")
+        if abs(np.linalg.det(M)) < 1e-10:
+            raise ValueError("Transformation matrix is singular")
 
-        return Finite(
-            np.array(positions),
-            np.array(basis_indices),
-        )
-            
+        new_lat = M @ self.lat_vecs   # new lattice vectors (rows)
+        M_inv = np.linalg.inv(M)
+
+        # Fractional coords of basis atoms in the original cell
+        # frac_super = (cell + tau_frac) @ inv(M)  — exact, no Cartesian roundtrip
+        lat_inv = np.linalg.inv(self.lat_vecs)
+        tau_frac = self.basis_vecs @ lat_inv   # (n_sites, 3)
+
+        # Search range: large enough to cover the supercell in every direction
+        max_range = int(np.ceil(np.abs(M).max())) + 1
+        tol = 1e-6
+
+        all_fracs = []
+        for ix in range(-max_range, max_range + 1):
+            for iy in range(-max_range, max_range + 1):
+                for iz in range(-max_range, max_range + 1):
+                    cell = np.array([ix, iy, iz], dtype=float)
+                    for tau in tau_frac:
+                        frac = (cell + tau) @ M_inv
+                        frac_mod = frac % 1.0
+                        # Map near-1 back to 0 to avoid boundary duplicates
+                        frac_mod[np.abs(frac_mod - 1.0) < tol] = 0.0
+                        if np.all(frac_mod >= 0.0) and np.all(frac_mod < 1.0 - tol):
+                            all_fracs.append(frac_mod)
+
+        if not all_fracs:
+            raise RuntimeError("No atoms found — check transformation matrix")
+
+        # Deduplicate in fractional space via rounding + np.unique
+        all_fracs = np.array(all_fracs)
+        _, unique_idx = np.unique(np.round(all_fracs, 8), axis=0, return_index=True)
+        new_basis = all_fracs[unique_idx] @ new_lat
+
+        # Sanity check: |det(M)| * n_sites should equal atom count for integer M
+        det = np.linalg.det(M)
+        if abs(det - round(det)) < 0.1:
+            expected = int(abs(round(det))) * self.n_sites
+            if len(new_basis) != expected:
+                import warnings
+                warnings.warn(
+                    f"Expected {expected} atoms in supercell, found {len(new_basis)}. "
+                    "Check transformation matrix."
+                )
+
+        return Lattice(new_lat, new_basis, self.bc)
 
     def find_neighbor_dist(self, hop_order=1, nx=3, ny=3, nz=1):
-        bulk_coords = []
-        for ix in range(nx):
-            for iy in range(ny):
-                for iz in range(nz):
-                    shift = (ix*np.array(self.latVecs[0]) +
-                            iy*np.array(self.latVecs[1]) +
-                            iz*np.array(self.latVecs[2]))
-                    for tau in self.basisVecs:
-                        bulk_coords.append(shift + np.array(tau))
+        ix, iy, iz = np.meshgrid(range(nx), range(ny), range(nz), indexing='ij')
+        cell_indices = np.stack([ix, iy, iz], axis=-1).reshape(-1, 3)
+        shifts = cell_indices @ self.lat_vecs
+        bulk_coords = (shifts[:, None, :] + self.basis_vecs[None, :, :]).reshape(-1, 3)
 
-        bulk_coords = np.array(bulk_coords)
-        coords_xy = bulk_coords[:, :2]
+        if np.allclose(bulk_coords[:, 2], bulk_coords[0, 2]):
+            coords = bulk_coords[:, :2]
+        else:
+            coords = bulk_coords
 
-        tree = sp.spatial.KDTree(coords_xy)
-        distances, _ = tree.query(coords_xy, k=10)
+        k = max(20, 4 * self.n_sites * hop_order + 1)
+        tree = KDTree(coords)
+        distances, _ = tree.query(coords, k=min(k, len(coords)))
         all_distances = np.unique(distances[:, 1:].round(8))
+
         if hop_order > len(all_distances):
             raise ValueError(
-                f"hop_order={hop_order} exceeds available neighbors ({len(all_distances)})"
+                f"hop_order={hop_order} exceeds available neighbors ({len(all_distances)}). "
+                f"Try increasing nx, ny, or nz."
             )
         return all_distances[hop_order - 1]
-
 
     @classmethod
     def chain(cls, a=1.0):
         """1D linear chain"""
-        return cls([[a]], [[0]])           
-    
+        return cls([[a, 0, 0], [0, 1, 0], [0, 0, 1]], [[0, 0, 0]])
+
     @classmethod
     def square(cls, a=1.0, c=1.0):
         """Square lattice"""
-        a1 = [a, 0, 0]
-        a2 = [0, a, 0]
-        a3 = [0, 0, c]
-        basis = [[0, 0, 0]]
-        return cls([a1, a2, a3], basis)
-    
+        return cls([[a, 0, 0], [0, a, 0], [0, 0, c]], [[0, 0, 0]])
+
     @classmethod
     def lieb(cls, a=1.0, c=1.0):
         """Lieb lattice"""
-        a1 = [a, 0, 0]
-        a2 = [0, a, 0]
-        a3 = [0, 0, c]
-        basis = [
-            [0, 0, 0],          # corner site
-            [a/2, 0, 0],        # x-edge center
-            [0, a/2, 0],        # y-edge center
-        ]
-        return cls([a1, a2, a3], basis)
+        return cls(
+            [[a, 0, 0], [0, a, 0], [0, 0, c]],
+            [[0, 0, 0], [a/2, 0, 0], [0, a/2, 0]],
+        )
 
     @classmethod
     def triangular(cls, a=1.0, c=1.0):
         """Triangular lattice"""
-        a1 = [a, 0, 0]
-        a2 = [a/2, a*np.sqrt(3)/2, 0]
-        a3 = [0, 0, c]
-        basis = [[0, 0, 0]]
-        return cls([a1, a2, a3], basis)
+        return cls(
+            [[a, 0, 0], [a/2, a*np.sqrt(3)/2, 0], [0, 0, c]],
+            [[0, 0, 0]],
+        )
 
     @classmethod
     def honeycomb(cls, a=1.0, c=1.0):
-        """Honeycomb lattice with fractional basis"""
-        import numpy as np
-
-        # Lattice vectors
+        """Honeycomb lattice"""
         a1 = np.array([a, 0, 0])
         a2 = np.array([a/2, a*np.sqrt(3)/2, 0])
         a3 = np.array([0, 0, c])
-
-        # Basis in fractional coordinates
-        fA = np.array([1/3, 1/3, 0])
-        fB = np.array([2/3, 2/3, 0])
-
-        # Convert to Cartesian
-        tauA = fA[0]*a1 + fA[1]*a2 + fA[2]*a3
-        tauB = fB[0]*a1 + fB[1]*a2 + fB[2]*a3
-
+        tauA = a1/3 + a2/3
+        tauB = 2*a1/3 + 2*a2/3
         return cls([a1, a2, a3], [tauA, tauB])
-    
+
     @classmethod
     def honeycomb2(cls, a=1.0, c=1.0):
         """Honeycomb lattice with 4 atoms/cell (armchair)"""
-        a1 = [a, 0, 0]
-        a2 = [0, a*np.sqrt(3), 0]
-        a3 = [0, 0, c]
-        tau1 = [0, 0, 0]
-        tau2 = [a/2, a*np.sqrt(3)/2, 0]
-        tau3 = [a, 0, 0]
-        tau4 = [3*a/2, a*np.sqrt(3)/2, 0]
-        return cls([a1, a2, a3], [tau1, tau2, tau3, tau4])
-    
+        return cls(
+            [[a, 0, 0], [0, a*np.sqrt(3), 0], [0, 0, c]],
+            [[0, 0, 0], [a/2, a*np.sqrt(3)/2, 0], [a, 0, 0], [3*a/2, a*np.sqrt(3)/2, 0]],
+        )
+
     @classmethod
     def kagome(cls, a=1.0, c=1.0):
         """Kagome lattice"""
-        a1 = [a, 0, 0]
-        a2 = [a/2, a*np.sqrt(3)/2, 0]
-        a3 = [0, 0, c]
-        tauA = [0, 0, 0]
-        tauB = [a/2, 0, 0]
-        tauC = [a/4, a*np.sqrt(3)/4, 0]
-        return cls([a1, a2, a3], [tauA, tauB, tauC])
-    
+        return cls(
+            [[a, 0, 0], [a/2, a*np.sqrt(3)/2, 0], [0, 0, c]],
+            [[0, 0, 0], [a/2, 0, 0], [a/4, a*np.sqrt(3)/4, 0]],
+        )
+
     @classmethod
     def kagome2(cls, a=1.0, c=1.0):
         """Rectangular kagome lattice"""
-        a1 = [2*a, 0, 0]
-        a2 = [0, 2*a*np.sqrt(3), 0]
-        a3 = [0, 0, c]
-        tau1 = [0, 0, 0]
-        tau2 = [a1[0]/2, a1[1]/2, 0]
-        tau3 = [3*a/4, a*np.sqrt(3)/2, 0]
-        tau4 = [(a1[0]+a2[0])/2, (a1[1]+a2[1])/2, 0]
-        tau5 = [a2[0]/2, a2[1]/2, 0]
-        tau6 = [a1[0]/4 + 3*a2[0]/4, 3*a2[1]/4, 0]
-        return cls([a1, a2, a3], [tau1, tau2, tau3, tau4, tau5, tau6])
-    
-    
+        a1 = np.array([2*a, 0, 0])
+        a2 = np.array([0, 2*a*np.sqrt(3), 0])
+        return cls(
+            [a1, a2, [0, 0, c]],
+            [
+                [0, 0, 0],
+                [a1[0]/2, 0, 0],
+                [3*a/4, a*np.sqrt(3)/2, 0],
+                [(a1[0] + a2[0])/2, (a1[1] + a2[1])/2, 0],
+                [0, a2[1]/2, 0],
+                [a1[0]/4, 3*a2[1]/4, 0],
+            ],
+        )
+
     @classmethod
-    def bilayer_kagome(cls, a=1.0, c=1.0, h=[0.,0.]):
-        a1 = [a, 0, 0]
-        a2 = [a/2, a*np.sqrt(3)/2, 0]
-        a3 = [0, 0, c]
+    def bilayer_kagome(cls, a=1.0, c=1.0, h=None):
+        if h is None:
+            h = [0.0, 0.0]
+        a1 = np.array([a, 0, 0])
+        a2 = np.array([a/2, a*np.sqrt(3)/2, 0])
+        a3 = np.array([0, 0, c])
+        layer1 = np.array([[0, 0, 0], [a/2, 0, 0], [a/4, a*np.sqrt(3)/4, 0]], dtype=float)
+        shift = h[0]*a1 + h[1]*a2 + np.array([0, 0, c/2])
+        layer2 = layer1 + shift
+        return cls([a1, a2, a3], np.vstack([layer1, layer2]))
 
-        # Layer 1 basis (z=0)
-        tauA1 = [0, 0, 0]
-        tauB1 = [a/2, 0, 0]
-        tauC1 = [a/4, a*np.sqrt(3)/4, 0]
+    @classmethod
+    def stack(cls, layer: 'Lattice', n_layers: int, d: float,
+              shifts: list | None = None) -> 'Lattice':
+        """Stack n_layers copies of a monolayer with interlayer separation d.
 
-        # Layer 2 basis (z=c/2)
-        shift = np.array(a1) * h[0] + np.array(a2) * h[1]
-        tauA2 = list(np.array(tauA1) + shift + np.array([0, 0, c/2]))
-        tauB2 = list(np.array(tauB1) + shift + np.array([0, 0, c/2]))
-        tauC2 = list(np.array(tauC1) + shift + np.array([0, 0, c/2]))
+        shifts: list of (3,) in-plane offset vectors, one per layer.
+                Defaults to AA stacking (all zeros).
+        """
+        if shifts is not None and len(shifts) != n_layers:
+            raise ValueError(f"len(shifts)={len(shifts)} must equal n_layers={n_layers}")
+        if d <= 0:
+            raise ValueError(f"d must be positive, got {d}")
 
-        basis = [tauA1, tauB1, tauC1, tauA2, tauB2, tauC2]
-        return cls([a1, a2, a3], basis)
-    
+        if shifts is None:
+            shifts = [np.zeros(3)] * n_layers
 
-    def find_kgrid(self, pbc=[1,1,1], mesh=[5,5,1]) -> np.ndarray:
-        b_vectors = self.bzVecs()  # returns [b1, b2, b3] for 3D
-        kgrid = []
+        a1, a2, _ = layer.lat_vecs
+        a3 = np.array([0., 0., n_layers * d])
+
+        all_basis = []
+        for i, shift in enumerate(shifts):
+            z_offset = np.array([0., 0., i * d])
+            for tau in layer.basis_vecs:
+                all_basis.append(tau + np.asarray(shift, dtype=float) + z_offset)
+
+        return cls([a1, a2, a3], all_basis)
+
+    @classmethod
+    def moire(cls, n, m, a=1.0, d=3.35, c=None) -> 'Lattice':
+        """
+        Commensurate moiré bilayer from two twisted honeycomb layers.
+
+        n, m  : integer supercell indices with n > m >= 0
+        a     : honeycomb in-plane lattice constant
+        d     : interlayer separation
+        c     : out-of-plane period (default 2*d)
+
+        Supercell size : N = n² + nm + m² honeycomb unit cells per layer
+        Twist angle    : cos θ = (n² + 4nm + m²) / (2·N)
+        Total atoms    : 4·N  (2 sublattices × N cells × 2 layers)
+
+        Smallest non-trivial case: n=2, m=1  →  N=7, θ≈21.8°
+        """
+        n, m = int(n), int(m)
+        if n <= 0 or m < 0 or n <= m:
+            raise ValueError("Require n > m >= 0")
+
+        a1 = np.array([a, 0.0, 0.0])
+        a2 = np.array([a / 2, a * np.sqrt(3) / 2, 0.0])
+
+        T1 = n * a1 + m * a2
+        T2 = -m * a1 + (n + m) * a2
+
+        # Twist angle from commensurability: R_θ(m·a1 + n·a2) = n·a1 + m·a2
+        v1 = (n * a1 + m * a2)[:2]
+        v2 = (m * a1 + n * a2)[:2]
+        theta = np.arctan2(v1[1], v1[0]) - np.arctan2(v2[1], v2[0])
+        print(f"Twist angle:{np.rad2deg(theta):.2f}")
+        
+        Rmat = np.array([[np.cos(theta), -np.sin(theta)],
+                         [np.sin(theta),  np.cos(theta)]])
+
+        # Enumerate layer-1 atoms via fractional coords in the moiré supercell
+        N_cells = n * n + n * m + m * m
+        print(f"No of atoms: {N_cells}")
+        M2d = np.array([[n, m], [-m, n + m]], dtype=float)
+        M2d_inv = np.linalg.inv(M2d)
+        a_mat = np.array([a1[:2], a2[:2]])
+
+        tol = 1e-6
+        max_r = int(np.ceil(max(abs(n), abs(n + m), abs(m)))) + 2
+        tau_fracs = [np.array([1 / 3, 1 / 3]), np.array([2 / 3, 2 / 3])]
+        T_mat = np.array([T1[:2], T2[:2]])
+
+        def _enumerate_layer(M_inv, z):
+            """Fold lattice points into [0,1)² moiré fractional coords and deduplicate."""
+            fracs = []
+            for ix in range(-max_r, max_r + 1):
+                for iy in range(-max_r, max_r + 1):
+                    cell = np.array([ix, iy], dtype=float)
+                    for tau in tau_fracs:
+                        fs = (cell + tau) @ M_inv
+                        fm = fs % 1.0
+                        fm[np.abs(fm - 1.0) < tol] = 0.0
+                        fracs.append(fm)
+            fracs = np.array(fracs)
+            _, uid = np.unique(fracs.round(8), axis=0, return_index=True)
+            fracs = fracs[uid]
+            pos_xy = fracs @ T_mat
+            return np.column_stack([pos_xy, np.full(len(fracs), z)])
+
+        layer1 = _enumerate_layer(M2d_inv, 0.0)
+
+        # Layer 2: independent enumeration on the rotated (b1,b2) lattice.
+        # In the rotated frame the moiré supercell satisfies
+        # T1 = m·b1 + n·b2,  T2 = −n·b1 + (m+n)·b2.
+        M2d_top = np.array([[m, n], [-n, m + n]], dtype=float)
+        M2d_top_inv = np.linalg.inv(M2d_top)
+
+        if c is None:
+            c = 2.0 * d
+
+        layer2 = _enumerate_layer(M2d_top_inv, d)
+
+        import warnings
+        for lbl, lyr in (("layer 1", layer1), ("layer 2", layer2)):
+            if len(lyr) != 2 * N_cells:
+                warnings.warn(
+                    f"Expected {2 * N_cells} atoms in {lbl}, found {len(lyr)}. "
+                    "Check (n, m) indices."
+                )
+
+        all_basis = np.vstack([layer1, layer2])
+        lat_vecs = np.array([
+            [T1[0], T1[1], 0.0],
+            [T2[0], T2[1], 0.0],
+            [0.0,   0.0,   c  ],
+        ])
+        return cls(lat_vecs, all_basis)
+
+    def save(self, filepath="POSCAR", species=None, fmt="vasp"):
+        """Export the lattice to a DFT format file.
+
+        filepath: output path (default "POSCAR")
+        species:  str  → all atoms share that element label
+                  list → one label per basis atom (len must equal n_sites)
+                  None → all atoms labelled "X"
+        fmt:      export format; only "vasp" (POSCAR) is currently supported
+        """
+        if species is None:
+            labels = ["X"] * self.n_sites
+        elif isinstance(species, str):
+            labels = [species] * self.n_sites
+        else:
+            labels = list(species)
+            if len(labels) != self.n_sites:
+                raise ValueError(
+                    f"len(species)={len(labels)} must equal n_sites={self.n_sites}"
+                )
+
+        if fmt == "vasp":
+            self._write_poscar(filepath, labels)
+        else:
+            raise ValueError(f"Unknown format '{fmt}'. Supported: 'vasp'")
+
+    def _write_poscar(self, filepath, labels):
+        # Collect Cartesian positions per species, preserving insertion order
+        groups = {}
+        for lbl, pos in zip(labels, self.basis_vecs):
+            groups.setdefault(lbl, []).append(pos)
+        for lbl in groups:
+            groups[lbl].sort(key=lambda p: p[2])
+
+        lines = [
+            "Generated by tbforge",
+            "  1.0",
+        ]
+        for vec in self.lat_vecs:
+            lines.append(f"  {vec[0]:>20.16f}  {vec[1]:>20.16f}  {vec[2]:>20.16f}")
+        lines.append("  " + "  ".join(groups))
+        lines.append("  " + "  ".join(str(len(v)) for v in groups.values()))
+        lat_inv = np.linalg.inv(self.lat_vecs)
+        lines.append("Direct")
+        for coords in groups.values():
+            for pos in coords:
+                f = pos @ lat_inv
+                lines.append(
+                    f"  {f[0]:>20.16f}  {f[1]:>20.16f}  {f[2]:>20.16f}"
+                )
+
+        with open(filepath, "w") as f:
+            f.write("\n".join(lines) + "\n")
+
+    def find_kgrid(self, mesh=None, pbc=None) -> np.ndarray:
+        if mesh is None:
+            mesh = [5, 5, 1]
+        if pbc is None:
+            pbc = self.bc
         nkx, nky, nkz = mesh
-        for i in range(nkx):
-            for j in range(nky):
-                for k in range(nkz):
-                    kvec = (i / nkx) * pbc[0] * b_vectors[0] \
-                        + (j / nky) * pbc[1] * b_vectors[1] \
-                        + (k / nkz) * pbc[2] * b_vectors[2]
-                    kgrid.append(kvec)
-        return np.array(kgrid)
-    
-    
+        b = self.bz_vecs
+        i, j, k = np.meshgrid(range(nkx), range(nky), range(nkz), indexing='ij')
+        kgrid = (
+            (i[..., None] / nkx) * pbc[0] * b[0] +
+            (j[..., None] / nky) * pbc[1] * b[1] +
+            (k[..., None] / nkz) * pbc[2] * b[2]
+        )
+        return kgrid.reshape(-1, 3)
+
     def find_kpath(self, kpath_labels=None, kpath_frac=None, n_kpts=120):
-        b1, b2, b3 = self.bzVecs()
+        b1, b2, b3 = self.bz_vecs
 
-        # Determine default path if none provided
         if kpath_labels is None or kpath_frac is None:
-            angle12 = np.arccos(np.clip(np.dot(b1, b2) / (np.linalg.norm(b1)*np.linalg.norm(b2)), -1, 1))
-            angle23 = np.arccos(np.clip(np.dot(b2, b3) / (np.linalg.norm(b2)*np.linalg.norm(b3)), -1, 1))
-
-            # Default paths based on BZ angles
+            angle12 = np.arccos(np.clip(
+                np.dot(b1, b2) / (np.linalg.norm(b1) * np.linalg.norm(b2)), -1, 1
+            ))
+            angle23 = np.arccos(np.clip(
+                np.dot(b2, b3) / (np.linalg.norm(b2) * np.linalg.norm(b3)), -1, 1
+            ))
             if np.isclose(angle12, np.pi/2, atol=1e-3) and np.isclose(angle23, np.pi/2, atol=1e-3):
-                # Square / cubic
                 kpath_labels = ["G", "M", "X", "G"]
-                kpath_frac = np.array([[0,0,0], [0.5,0.5,0], [0.5,0,0], [0,0,0]])
+                kpath_frac = np.array([[0, 0, 0], [0.5, 0.5, 0], [0.5, 0, 0], [0, 0, 0]])
             elif np.isclose(angle12, 2*np.pi/3, atol=1e-3):
-                # Hexagonal
                 kpath_labels = ["G", "M", "K", "G"]
-                kpath_frac = np.array([[0,0,0], [0.5,0,0], [2/3,1/3,0], [0,0,0]])
+                kpath_frac = np.array([[0, 0, 0], [0.5, 0, 0], [2/3, 1/3, 0], [0, 0, 0]])
             else:
                 raise ValueError("Cannot infer default BZ path for this lattice geometry")
 
-        # Convert fractional coordinates to Cartesian
         kpath_cart = np.array([p[0]*b1 + p[1]*b2 + p[2]*b3 for p in kpath_frac])
-
-        # Segment lengths
         segment_lengths = np.linalg.norm(np.diff(kpath_cart, axis=0), axis=1)
         total_length = np.sum(segment_lengths)
         nk_list = [max(2, int(round(n_kpts * l / total_length))) for l in segment_lengths]
 
-        # Build k-path
+        # Each segment contributes nk points (excluding its start, including its end)
         kpath = [kpath_cart[0]]
-        kpath_1d = [0.0]
-        tick_locs = [0.0]
-        tick_labels = [kpath_labels[0]]
-        dist_accum = 0.0
-
         for i, nk in enumerate(nk_list):
-            start = kpath_cart[i]
-            end = kpath_cart[i+1]
-            endpoint = (i == len(nk_list)-1)
-            segment = np.linspace(start, end, nk, endpoint=endpoint)
-
-            if not endpoint:
-                segment = segment[1:]  # avoid duplicate at junction
-
-            diffs = np.linalg.norm(np.diff(np.vstack([start, segment]), axis=0), axis=1)
-            dist_segment = dist_accum + np.cumsum(diffs)
-            dist_accum = dist_segment[-1]
-
+            segment = np.linspace(kpath_cart[i], kpath_cart[i + 1], nk + 1)[1:]
             kpath.extend(segment)
-            kpath_1d.extend(dist_segment)
 
-            tick_locs.append(dist_accum)
-            tick_labels.append(kpath_labels[i+1])
+        kpath = np.array(kpath)
+        kpath_1d = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(kpath, axis=0), axis=1))])
 
-        ticks = [tick_locs, tick_labels]
-        return np.array(kpath), np.array(kpath_1d), ticks
-
-
-
-
-    
+        tick_indices = np.concatenate([[0], np.cumsum(nk_list)])
+        tick_locs = kpath_1d[tick_indices].tolist()
+        ticks = [tick_locs, kpath_labels]
+        return kpath, kpath_1d, ticks
