@@ -169,11 +169,11 @@ Solver(h).plot_dos(erange=np.linspace(-6,6, 200), kpts=kgrid); #plot DOS
 <img src="images/nnn-hopping.png" alt="Honeycomb DOS" width="400"/>
 
 
-### AA bilayer honeycomb bands
+### AB bilayer honeycomb bands
 ```python
 bulk = Lattice.honeycomb(a=1.0) #define bulk
 
-#lattice vectors
+#lattice vectors; (a1/3)+(a2/3) shift for 2nd layer
 a1 = np.array([1., 0., 0.])
 a2 = np.array([0.5, np.sqrt(3)/2, 0.])
 bilayer = Lattice.stack(bulk, n_layers=2, d=1.0,
