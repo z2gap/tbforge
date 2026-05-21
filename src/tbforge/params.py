@@ -25,8 +25,9 @@ class P:
     Jafm    = 20
     delta_pip = 21
     Vbilayer  = 22
+    const     = 23  # always 1.0 — used to store direct amplitudes in coeff
 
-    n_param = 23
+    n_param = 24
 
 
     @staticmethod

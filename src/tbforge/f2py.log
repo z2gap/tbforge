@@ -1,0 +1,24 @@
+The Meson build system
+Version: 1.10.1
+Source dir: /tmp/tmpjmuo_91u
+Build dir: /tmp/tmpjmuo_91u/bbdir
+Build type: native build
+Project name: find_hopsf90
+Project version: 0.1
+Fortran compiler for the host machine: gfortran (gcc 9.4.0 "GNU Fortran (Ubuntu 9.4.0-1ubuntu1~20.04.2) 9.4.0")
+Fortran linker for the host machine: gfortran ld.bfd 2.34
+C compiler for the host machine: cc (gcc 9.4.0 "cc (Ubuntu 9.4.0-1ubuntu1~20.04.2) 9.4.0")
+C linker for the host machine: cc ld.bfd 2.34
+Host machine cpu family: x86_64
+Host machine cpu: x86_64
+Program /home/ss/miniconda3/bin/python found: YES (/home/ss/miniconda3/bin/python)
+Found pkg-config: YES (/usr/bin/pkg-config) 0.29.1
+Run-time dependency python found: YES 3.12
+Library quadmath found: YES
+Build targets in project: 1
+
+Found ninja-1.12.1 at /home/ss/miniconda3/bin/ninja
+ninja: Entering directory `/tmp/tmpjmuo_91u/bbdir'
+[1/7] Scanning target find_hopsf90.cpython-312-x86_64-linux-gnu for modules
+[2/7] Compiling C object find_hopsf90.cpython-312-x86_64-linux-gnu.so.p/find_hopsf90module.c.o
+ninja: build stopped: interrupted by user.

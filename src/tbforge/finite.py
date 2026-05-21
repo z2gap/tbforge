@@ -57,24 +57,11 @@ class Finite:
     def n_sites(self):
         return self.positions.shape[0]
 
-    def find_neighbor_dist(self, hop_order=1, nx=2, ny=2, nz=1):
-        ix, iy, iz = np.meshgrid(range(nx), range(ny), range(nz), indexing='ij')
-        cell_indices = np.stack([ix, iy, iz], axis=-1).reshape(-1, 3)
-        shifts = cell_indices @ self.lat_vecs
-        bulk_coords = (shifts[:, None, :] + self.positions[None, :, :]).reshape(-1, 3)
+    @property
+    def basis_vecs(self):
+        return self.positions
 
-        if np.allclose(bulk_coords[:, 2], bulk_coords[0, 2]):
-            coords = bulk_coords[:, :2]
-        else:
-            coords = bulk_coords
-
-        k = max(20, hop_order * 10 + 1)
-        tree = KDTree(coords)
-        distances, _ = tree.query(coords, k=min(k, len(coords)))
-        all_distances = np.unique(distances[:, 1:].round(8))
-
-        if hop_order > len(all_distances):
-            raise ValueError(
-                f"hop_order={hop_order} exceeds available neighbors ({len(all_distances)})"
-            )
-        return all_distances[hop_order - 1]
+    def find_neighbor_dist(self, hop_order=1, n_img=2):
+        # Finite system: bc=[0,0,0], so all positions are already in self.positions.
+        # Delegate to the underlying unit-cell lattice for tiling in periodic directions.
+        return self.lat.find_neighbor_dist(hop_order=hop_order, n_img=n_img)

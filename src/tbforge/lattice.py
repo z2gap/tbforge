@@ -31,12 +31,20 @@ class Lattice:
     def make_finite(self, shape):
         return Finite(self, shape)
 
-    def transform(self, matrix) -> 'Lattice':
+    def transform(self, matrix, bc=None) -> 'Lattice':
         """Construct a supercell via a transformation matrix.
 
         matrix: [nx, ny, nz]  — diagonal supercell (integer or float)
                 (3,3) array M — new lattice vectors = M @ lat_vecs
                                M entries may be non-integer (fractional/moiré).
+        bc:     boundary conditions for the new lattice, e.g. [1, 0, 0] for a
+                ribbon periodic in x and open in y.  Defaults to self.bc.
+
+        Common patterns
+        ---------------
+        periodic  : Lattice.honeycomb()                         # bc=[1,1,1] default
+        slab/ribbon: lat.transform([1, 10, 1], bc=[1, 0, 0])   # periodic x, open y
+        finite    : lat.transform([5, 5, 1],  bc=[0, 0, 0])    # fully open
         """
         M = np.array(matrix, dtype=float)
         if M.ndim == 1:
@@ -92,18 +100,20 @@ class Lattice:
                     "Check transformation matrix."
                 )
 
-        return Lattice(new_lat, new_basis, self.bc)
+        result_bc = np.array(bc) if bc is not None else self.bc.copy()
+        return Lattice(new_lat, new_basis, result_bc)
 
-    def find_neighbor_dist(self, hop_order=1, nx=3, ny=3, nz=1):
-        ix, iy, iz = np.meshgrid(range(nx), range(ny), range(nz), indexing='ij')
+    def find_neighbor_dist(self, hop_order=1, n_img=2):
+        # Tile only in periodic directions: finite directions (bc=0) already have
+        # all relevant sites in basis_vecs via Lattice.transform(), so no images needed.
+        ranges = [range(-n_img, n_img + 1) if self.bc[i] else [0] for i in range(3)]
+
+        ix, iy, iz = np.meshgrid(*ranges, indexing='ij')
         cell_indices = np.stack([ix, iy, iz], axis=-1).reshape(-1, 3)
         shifts = cell_indices @ self.lat_vecs
-        bulk_coords = (shifts[:, None, :] + self.basis_vecs[None, :, :]).reshape(-1, 3)
+        all_coords = (shifts[:, None, :] + self.basis_vecs[None, :, :]).reshape(-1, 3)
 
-        if np.allclose(bulk_coords[:, 2], bulk_coords[0, 2]):
-            coords = bulk_coords[:, :2]
-        else:
-            coords = bulk_coords
+        coords = all_coords[:, :2] if np.allclose(all_coords[:, 2], all_coords[0, 2]) else all_coords
 
         k = max(20, 4 * self.n_sites * hop_order + 1)
         tree = KDTree(coords)
@@ -113,7 +123,7 @@ class Lattice:
         if hop_order > len(all_distances):
             raise ValueError(
                 f"hop_order={hop_order} exceeds available neighbors ({len(all_distances)}). "
-                f"Try increasing nx, ny, or nz."
+                f"Try increasing n_img."
             )
         return all_distances[hop_order - 1]
 
@@ -318,6 +328,8 @@ class Lattice:
         ])
         return cls(lat_vecs, all_basis)
 
+
+
     def save(self, filepath="POSCAR", species=None, fmt="vasp"):
         """Export the lattice to a DFT format file.
 
@@ -423,3 +435,44 @@ class Lattice:
         tick_locs = kpath_1d[tick_indices].tolist()
         ticks = [tick_locs, kpath_labels]
         return kpath, kpath_1d, ticks
+
+
+    def find_kpts(self, direction=None, n_kpts=300, half_zone=False, **kwargs):
+        """Generate a k-path, dispatching on boundary conditions.
+
+        For bulk lattices (bc=[1,1,1]) delegates to find_kpath() and accepts
+        its keyword arguments (kpath_labels, kpath_frac). For ribbon/slab
+        geometries (exactly one periodic direction) generates a 1D path along
+        that direction over one full BZ period [0, 2π/a].
+
+        Returns the same (kpath, kpath_1d, ticks) format throughout so
+        Solver.get_bands() and Plotter.plot_bands() work unchanged.
+
+        Args:
+            direction: Reciprocal axis index (0=b1, 1=b2, 2=b3). Ribbon only;
+                       auto-detected from bc when omitted. Ignored for bulk.
+            n_kpts: Number of k-points.
+            half_zone: Ribbon only. If True, sweep [Γ → X] instead of
+                       [Γ → X → Γ].
+            **kwargs: Passed through to find_kpath() for bulk lattices.
+
+        Returns:
+            kpath: (n_kpts, 3) array of Cartesian k-vectors.
+            kpath_1d: (n_kpts,) cumulative distances for the plot x-axis.
+            ticks: [tick_positions, tick_labels] for Plotter.plot_bands().
+        """
+        if np.all(self.bc == 1):
+            return self.find_kpath(n_kpts=n_kpts, **kwargs)
+
+        if direction is None:
+            periodic = np.where(self.bc == 1)[0]
+            if len(periodic) == 0:
+                raise ValueError("No periodic direction in bc; specify direction explicitly")
+            direction = int(periodic[0])
+
+        b = self.bz_vecs[direction]
+
+        fracs = np.linspace(0.0, 0.5 if half_zone else 1.0, n_kpts)
+        kpath = np.outer(fracs, b)
+        kpath_1d = np.concatenate([[0.0], np.cumsum(np.linalg.norm(np.diff(kpath, axis=0), axis=1))])
+        return kpath, kpath_1d, None

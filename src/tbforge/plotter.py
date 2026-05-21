@@ -28,7 +28,7 @@ class Plotter:
         self.ax.set_aspect('equal')
 
 
-    def plot_lattice(self, lat, s=20, add_bond=False, add_tag=False) -> None:
+    def plot_lattice(self, lat, s=20, add_bond=False, add_label=False) -> None:
         rlist = lat.basis_vecs
         # z coordinates of all atoms
         z = rlist[:, 2]
@@ -64,13 +64,13 @@ class Plotter:
             s=s
         )
 
-        if add_tag:
+        if add_label:
             [plt.text(rlist[i,0], rlist[i,1], i) for i in range(len(rlist))]
 
         if add_bond:
             tree = KDTree(rlist[:, :2])
             nn_dist = lat.find_neighbor_dist(hop_order=1)
-            hops = tree.query_ball_point(rlist[:, :2], r=nn_dist+1e-3)
+            hops = tree.query_ball_point(rlist[:, :2], r=nn_dist+1e-2)
             for i, jlist in enumerate(hops):
                 for j in jlist:
                     ri = rlist[i]
