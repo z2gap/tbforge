@@ -20,6 +20,20 @@ pip install -e .
 
 ## Documentation
 
+### Import tbforge and standard libraries
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+from tbforge.lattice import *
+from tbforge.plotter import *
+from tbforge.hopping import *
+from tbforge.hamiltonian import *
+from tbforge.solver import *
+from tbforge.params import *
+```
+
+
 ### Generate lattices
 ```python
 #bulk honeycomb

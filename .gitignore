@@ -6,6 +6,7 @@ test/
 
 .vscode/
 
+CLAUDE.md
 .env
 .env.*
 *.key
